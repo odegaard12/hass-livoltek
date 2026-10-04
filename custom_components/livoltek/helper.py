@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import time
 from typing import Any
 
 import aiohttp
 
-from homeassistant.auth.jwt_wrapper import PyJWT
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.const import CONF_API_KEY
@@ -40,15 +42,29 @@ from .const import (
     LOGGER,
 )
 
+# Refresh the login token this many seconds before it expires.
+TOKEN_EXPIRY_MARGIN = 120
+
 
 def validate_jwt(jwt: str) -> bool:
-    """Validate a JWT token."""
-    try:
-        PyJWT(jwt)
-        return True
-    except Exception as e:
-        LOGGER.info("Invalid JWT token: %s", e)
+    """Return True while the cached login token can still be used.
+
+    The previous implementation called ``PyJWT(jwt)``, which builds a decoder
+    (with the token as its *options*) instead of decoding the token. That always
+    raised, so the integration logged in again on every update. Here only the
+    payload is read (we need the expiry, we do not trust or verify the claims)
+    and the token is reused until shortly before ``exp``.
+    """
+    if not jwt:
         return False
+    try:
+        payload = jwt.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except Exception as e:  # noqa: BLE001 - not a JWT: get a fresh one
+        LOGGER.debug("Login token is not a readable JWT, refreshing: %s", e)
+        return False
+    exp = claims.get("exp")
+    return exp is None or float(exp) - TOKEN_EXPIRY_MARGIN > time.time()
 
 
 async def async_get_login_token(host: str, api_key: str, secuid: str) -> str:
@@ -108,7 +124,7 @@ async def async_get_api_client(
     if validate_jwt(access_token):
         token = access_token
     else:
-        LOGGER.info("Invalid JWT token, refreshing")
+        LOGGER.debug("Login token missing or about to expire, logging in again")
         token = await async_get_login_token(host, api_key, secuid)
 
     api_client = ApiClient(config)
@@ -179,9 +195,12 @@ async def async_get_energy_storage(
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
+            # pylivoltek's signature is (user_token, site_id), like every other
+            # endpoint. Passing them the other way round sent the site id as the
+            # user token, so /ESS always answered 401 "token.invalid".
             lambda: api.get_energy_storage_with_http_info(
-                site_id,
                 user_token,
+                site_id,
                 _request_timeout=API_REQUEST_TIMEOUT,
             ),
         )

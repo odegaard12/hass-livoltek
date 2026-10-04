@@ -15,6 +15,7 @@ from .const import (
     CONF_SITE_ID,
 )
 
+from pylivoltek.rest import ApiException
 from requests.structures import CaseInsensitiveDict
 from .helper import (
     async_get_api_client,
@@ -51,7 +52,23 @@ class LivoltekDataUpdateCoordinator(DataUpdateCoordinator):
         self.config_entry = entry
 
     async def _async_update_data(self):
-        """Fetch system status from Livoltek."""
+        """Fetch system status from Livoltek.
+
+        If the server rejects the cached login token (it can invalidate it before
+        its expiry, e.g. after a login from the Livoltek app), drop it and retry
+        once with a fresh one instead of failing the whole update.
+        """
+        try:
+            return await self._async_fetch()
+        except ApiException as err:
+            if err.status not in (401, 403):
+                raise
+            LOGGER.debug("Livoltek rejected the login token (%s); retrying with a new one", err.status)
+            self.access_token = None
+            return await self._async_fetch()
+
+    async def _async_fetch(self):
+        """One full read of the site, devices, power flow, storage and history."""
         api_result = await async_get_api_client(self.config_entry, self.access_token)
         api = api_result[0]
         self.access_token = api_result[1]
