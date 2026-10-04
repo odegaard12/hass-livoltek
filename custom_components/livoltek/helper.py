@@ -55,16 +55,21 @@ def validate_jwt(jwt: str) -> bool:
     payload is read (we need the expiry, we do not trust or verify the claims)
     and the token is reused until shortly before ``exp``.
     """
-    if not jwt:
+    if not jwt or not isinstance(jwt, str):
         return False
     try:
         payload = jwt.split(".")[1]
         claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
-    except Exception as e:  # noqa: BLE001 - not a JWT: get a fresh one
+        exp = claims.get("exp")
+        return exp is None or float(exp) - TOKEN_EXPIRY_MARGIN > time.time()
+    except Exception as e:  # noqa: BLE001 - not a readable JWT (or odd exp): get a fresh one
         LOGGER.debug("Login token is not a readable JWT, refreshing: %s", e)
         return False
-    exp = claims.get("exp")
-    return exp is None or float(exp) - TOKEN_EXPIRY_MARGIN > time.time()
+
+
+def _is_auth_error(err: Exception) -> bool:
+    """Return True for 401/403, which the coordinator recovers from with a fresh login."""
+    return getattr(err, "status", None) in (401, 403)
 
 
 async def async_get_login_token(host: str, api_key: str, secuid: str) -> str:
@@ -165,6 +170,8 @@ async def async_get_cur_power_flow(
         )
         return current_power_flow[0].data
     except ApiException as e:
+        if _is_auth_error(e):
+            raise  # the coordinator retries once with a fresh login
         LOGGER.error("Error getting current power flow: %s", e)
 
 
@@ -210,6 +217,8 @@ async def async_get_energy_storage(
 
         return result[0].data
     except ApiException as e:
+        if _is_auth_error(e):
+            raise  # the coordinator retries once with a fresh login
         LOGGER.warning(
             "Failed to fetch energy storage data for site %s: %s", site_id, e
         )
@@ -247,6 +256,11 @@ async def async_get_energy_storage_direct(
         return payload.get("data")
     except asyncio.CancelledError:
         raise
+    except aiohttp.ClientResponseError as e:
+        if e.status in (401, 403):  # same as the wrapper: let the coordinator log in again
+            raise ApiException(status=e.status, reason=e.message) from e
+        LOGGER.warning("Direct /ESS fetch failed for site %s: %s", site_id, e)
+        return None
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError, TypeError) as e:
         LOGGER.warning(
             "Direct /ESS fetch failed for site %s: %s", site_id, e

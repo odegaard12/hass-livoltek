@@ -5,7 +5,7 @@ import datetime as dt
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
     DOMAIN,
@@ -65,7 +65,10 @@ class LivoltekDataUpdateCoordinator(DataUpdateCoordinator):
                 raise
             LOGGER.debug("Livoltek rejected the login token (%s); retrying with a new one", err.status)
             self.access_token = None
-            return await self._async_fetch()
+            try:
+                return await self._async_fetch()
+            except ApiException as retry_err:
+                raise UpdateFailed(f"Livoltek rejected a fresh login token: {retry_err.status}") from retry_err
 
     async def _async_fetch(self):
         """One full read of the site, devices, power flow, storage and history."""

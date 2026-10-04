@@ -148,3 +148,74 @@ async def test_async_update_data_reuses_cached_access_token(
     assert get_api_client.await_args_list[0].args == (livoltek_entry, None)
     assert get_api_client.await_args_list[1].args == (livoltek_entry, "first-token")
     assert coordinator.access_token == "second-token"
+
+
+def _patch_fetch(monkeypatch, get_api_client, get_site) -> None:
+    """Patch every API call made by one coordinator update."""
+    base = "custom_components.livoltek.coordinator."
+    monkeypatch.setattr(base + "async_get_api_client", get_api_client)
+    monkeypatch.setattr(base + "async_get_site", get_site)
+    monkeypatch.setattr(base + "async_get_device_list", AsyncMock(return_value={}))
+    monkeypatch.setattr(base + "async_get_cur_power_flow", AsyncMock(return_value=build_power_flow()))
+    monkeypatch.setattr(base + "async_get_energy_storage", AsyncMock(return_value=build_energy_storage()))
+    monkeypatch.setattr(base + "async_get_recent_grid", AsyncMock(return_value=[]))
+    monkeypatch.setattr(base + "async_get_recent_solar", AsyncMock(return_value=[]))
+
+
+@pytest.mark.asyncio
+async def test_async_update_data_retries_once_with_fresh_login_on_401(
+    hass,
+    livoltek_entry,
+    monkeypatch,
+) -> None:
+    """A rejected token is dropped and the update is retried with a new login."""
+    from pylivoltek.rest import ApiException
+
+    coordinator = LivoltekDataUpdateCoordinator(hass, livoltek_entry)
+    coordinator.access_token = "stale-token"
+    get_api_client = AsyncMock(side_effect=[(object(), "stale-token"), (object(), "fresh-token")])
+    get_site = AsyncMock(side_effect=[ApiException(status=401), {"name": "Home Site"}])
+    _patch_fetch(monkeypatch, get_api_client, get_site)
+
+    await coordinator._async_update_data()
+
+    assert get_api_client.await_args_list[0].args == (livoltek_entry, "stale-token")
+    assert get_api_client.await_args_list[1].args == (livoltek_entry, None)  # token dropped
+    assert coordinator.access_token == "fresh-token"
+    assert coordinator.site == {"name": "Home Site"}
+
+
+@pytest.mark.asyncio
+async def test_async_update_data_fails_cleanly_when_fresh_login_is_rejected(
+    hass,
+    livoltek_entry,
+    monkeypatch,
+) -> None:
+    """If the retry is rejected too, Home Assistant gets an UpdateFailed."""
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+    from pylivoltek.rest import ApiException
+
+    coordinator = LivoltekDataUpdateCoordinator(hass, livoltek_entry)
+    get_api_client = AsyncMock(return_value=(object(), "token"))
+    _patch_fetch(monkeypatch, get_api_client, AsyncMock(side_effect=ApiException(status=401)))
+
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_async_update_data_does_not_retry_other_errors(
+    hass,
+    livoltek_entry,
+    monkeypatch,
+) -> None:
+    """Errors other than 401/403 are not retried."""
+    from pylivoltek.rest import ApiException
+
+    coordinator = LivoltekDataUpdateCoordinator(hass, livoltek_entry)
+    get_api_client = AsyncMock(return_value=(object(), "token"))
+    _patch_fetch(monkeypatch, get_api_client, AsyncMock(side_effect=ApiException(status=500)))
+
+    with pytest.raises(ApiException):
+        await coordinator._async_update_data()
+    get_api_client.assert_awaited_once()
