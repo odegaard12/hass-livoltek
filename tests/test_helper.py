@@ -267,6 +267,19 @@ async def test_async_get_energy_storage_reraises_auth_errors(status) -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_api_answers_do_not_crash() -> None:
+    """A response without a body (seen after server-side timeouts) must not raise."""
+    api = Mock()
+    api.hess_api_device_site_id_list_get_with_http_info.return_value = (SimpleNamespace(data=None),)
+    api.get_recent_energy_import_export_with_http_info.return_value = ({"data": None},)
+    api.get_recent_solar_generated_energy_with_http_info.return_value = ({"code": "500"},)
+
+    assert await helper.async_get_device_list(api, "user-token", "site-123") is None
+    assert await helper.async_get_recent_grid(api, "user-token", "site-123") == []
+    assert await helper.async_get_recent_solar(api, "user-token", "site-123") == []
+
+
+@pytest.mark.asyncio
 async def test_async_get_energy_storage_returns_none_on_api_exception(
     monkeypatch,
 ) -> None:

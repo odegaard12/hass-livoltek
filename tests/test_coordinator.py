@@ -204,6 +204,23 @@ async def test_async_update_data_fails_cleanly_when_fresh_login_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_async_update_data_keeps_devices_when_list_is_empty(
+    hass,
+    livoltek_entry,
+    monkeypatch,
+) -> None:
+    """An empty device-list answer keeps the devices from the previous update."""
+    coordinator = LivoltekDataUpdateCoordinator(hass, livoltek_entry)
+    coordinator.devices = {"device-1": {"name": "Inverter"}}
+    _patch_fetch(monkeypatch, AsyncMock(return_value=(object(), "token")), AsyncMock(return_value={"name": "Home Site"}))
+    monkeypatch.setattr("custom_components.livoltek.coordinator.async_get_device_list", AsyncMock(return_value=None))
+
+    await coordinator._async_update_data()
+
+    assert coordinator.devices == {"device-1": {"name": "Inverter"}}
+
+
+@pytest.mark.asyncio
 async def test_async_update_data_does_not_retry_other_errors(
     hass,
     livoltek_entry,

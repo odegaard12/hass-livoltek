@@ -136,7 +136,8 @@ class LivoltekDataUpdateCoordinator(DataUpdateCoordinator):
                 self.todays_solar = solar
 
         self.site = site
-        self.devices = devices
+        if devices is not None:  # an empty answer keeps the devices we already know
+            self.devices = devices
         self.current_power_flow = current_power_flow
         self.energy_storage = energy_storage
         LOGGER.debug("Current Power Flow: %s", current_power_flow)

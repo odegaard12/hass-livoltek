@@ -191,7 +191,9 @@ async def async_get_device_list(
             _request_timeout=API_REQUEST_TIMEOUT,
         ),
     )
-    return device_list[0].data["list"]
+    # The API sometimes answers without a body (e.g. after a server-side timeout):
+    # None lets the coordinator keep the previous list instead of crashing.
+    return (device_list[0].data or {}).get("list")
 
 
 async def async_get_energy_storage(
@@ -299,7 +301,7 @@ async def async_get_recent_grid(
             _request_timeout=API_REQUEST_TIMEOUT,
         ),
     )
-    return recent_grid[0]["data"]
+    return recent_grid[0].get("data") or []
 
 
 async def async_get_recent_solar(
@@ -316,7 +318,7 @@ async def async_get_recent_solar(
             _request_timeout=API_REQUEST_TIMEOUT,
         ),
     )
-    return recent_solar[0]["data"]
+    return recent_solar[0].get("data") or []
 
 
 async def async_update_devices(entry: ConfigEntry, hass: HomeAssistant) -> None:
