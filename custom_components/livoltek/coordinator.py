@@ -5,6 +5,7 @@ import datetime as dt
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -68,7 +69,9 @@ class LivoltekDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 return await self._async_fetch()
             except ApiException as retry_err:
-                raise UpdateFailed(f"Livoltek rejected a fresh login token: {retry_err.status}") from retry_err
+                if retry_err.status in (401, 403):  # a fresh login rejected too: ask the user to sign in again
+                    raise ConfigEntryAuthFailed(f"Livoltek rejected a fresh login token: {retry_err.status}") from retry_err
+                raise UpdateFailed(f"Livoltek update failed after a new login: {retry_err.status}") from retry_err
 
     async def _async_fetch(self):
         """One full read of the site, devices, power flow, storage and history."""
@@ -125,15 +128,13 @@ class LivoltekDataUpdateCoordinator(DataUpdateCoordinator):
             self.config_entry.data[CONF_SITE_ID],
         )
 
-        for grid in recent_grid:
-            ts = dt.date.fromtimestamp(int(grid["ts"]) / 1000)
-            if ts == dt.date.today():
-                self.todays_grid = grid
+        # Only today's entry counts: without one (e.g. just after midnight) the
+        # daily sensors have no value instead of keeping yesterday's reading.
+        def today(entries):
+            return next((e for e in entries if dt.date.fromtimestamp(int(e["ts"]) / 1000) == dt.date.today()), None)
 
-        for solar in recent_solar:
-            ts = dt.date.fromtimestamp(int(solar["ts"]) / 1000)
-            if ts == dt.date.today():
-                self.todays_solar = solar
+        self.todays_grid = today(recent_grid)
+        self.todays_solar = today(recent_solar)
 
         self.site = site
         if devices is not None:  # an empty answer keeps the devices we already know

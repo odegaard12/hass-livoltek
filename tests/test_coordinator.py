@@ -191,16 +191,39 @@ async def test_async_update_data_fails_cleanly_when_fresh_login_is_rejected(
     livoltek_entry,
     monkeypatch,
 ) -> None:
-    """If the retry is rejected too, Home Assistant gets an UpdateFailed."""
-    from homeassistant.helpers.update_coordinator import UpdateFailed
+    """If a fresh login is rejected too, Home Assistant asks the user to sign in again."""
+    from homeassistant.exceptions import ConfigEntryAuthFailed
     from pylivoltek.rest import ApiException
 
     coordinator = LivoltekDataUpdateCoordinator(hass, livoltek_entry)
     get_api_client = AsyncMock(return_value=(object(), "token"))
     _patch_fetch(monkeypatch, get_api_client, AsyncMock(side_effect=ApiException(status=401)))
 
-    with pytest.raises(UpdateFailed):
+    with pytest.raises(ConfigEntryAuthFailed):
         await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_async_update_data_drops_yesterdays_daily_values(
+    hass,
+    livoltek_entry,
+    monkeypatch,
+) -> None:
+    """Without an entry for today, the daily values are cleared, not kept from yesterday."""
+    coordinator = LivoltekDataUpdateCoordinator(hass, livoltek_entry)
+    coordinator.todays_grid = {"positive": "4.6", "negative": "1.4"}
+    coordinator.todays_solar = {"powerGeneration": "8.9"}
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    _patch_fetch(monkeypatch, AsyncMock(return_value=(object(), "token")), AsyncMock(return_value={"name": "Home Site"}))
+    monkeypatch.setattr(
+        "custom_components.livoltek.coordinator.async_get_recent_grid",
+        AsyncMock(return_value=[{"ts": str(midday_timestamp_ms(yesterday)), "positive": "1.1", "negative": "0.2"}]),
+    )
+
+    await coordinator._async_update_data()
+
+    assert coordinator.todays_grid is None
+    assert coordinator.todays_solar is None
 
 
 @pytest.mark.asyncio
